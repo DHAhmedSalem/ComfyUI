@@ -85,15 +85,48 @@ def find_io_nodes(prompt : Any) -> tuple[Dict[int, tuple[str, str]], Dict[str, s
 
     return input_idx_map, output_idx
 
-def proc_image(wf: str, im_path : str, im_out : str, view : bool):
+
+
+def make_timer():
     st = time.time()
-    def timer():
+    def _timer():
         nonlocal st
         ct = time.time()
         etime = f"{(ct-st)*1000:0.2f}"
         st = ct
         return f"{etime:12s} (ms)"
+
+    return _timer
+
+def proc_image_persist(
+        ws : wsc.ClientConnection,
+        prompt : Any,
+        param : Dict[int, tuple[str, str]],
+        out_idx : Dict[str, str],
+        im_path : str,
+        im_out : str):
+
+    timer = make_timer()
+    print(f"[+{timer()}] Sending new query from {im_path}.")
+    prompt[param[0][0]]["inputs"]["image"] = im_path
+
+    images = get_images(ws, prompt, out_idx)
+
+    print(f"[+{timer()}] Received {len(images)} image(s) from the server.")
     
+    for node_suff in images:
+        for image_data in images[node_suff]:
+            out_file = f"{im_out}_{node_suff}.png"
+            arr = np.asarray(bytearray(image_data))
+            im = cv2.imdecode(arr, -1)
+            cv2.imwrite(out_file, im)
+
+    print(f"[+{timer()}] Finished writing to disk.")
+    return images
+    
+
+def proc_image(wf: str, im_path : str, im_out : str, view : bool):
+    timer = make_timer()
     with open(wf, "r", encoding="utf-8") as fd:
         prompt = json.load(fd)
 
@@ -116,28 +149,11 @@ def proc_image(wf: str, im_path : str, im_out : str, view : bool):
 
     print(f"[+{timer()}] Parsed workflow file for I/O")    
     
-    prompt[param[0][0]]["inputs"]["image"] = im_path
-
-    print(f"[+{timer()}] Finished preparing the query.")
-    
     ws = wsc.connect("ws://{}/ws?clientId={}".format(server_address, client_id))
-
     print(f"[+{timer()}] Connected to the server.")
-    
-    images = get_images(ws, prompt, out_idx)
 
-    print(f"[+{timer()}] Received {len(images)} image(s) from the server.")
+    images = proc_image_persist(ws, prompt, param, out_idx, im_path, im_out)
     
-    for node_suff in images:
-        for image_data in images[node_suff]:
-            out_file = f"{im_out}_{node_suff}.png"
-            arr = np.asarray(bytearray(image_data))
-            im = cv2.imdecode(arr, -1)
-            cv2.imwrite(out_file, im)
-
-    print(f"[+{timer()}] Finished writing to disk.")
-    
-            
     if view:
         win_title = "GEN_IMAGE_PREVIEW_WINDOW"
         cv2.namedWindow(win_title)
