@@ -85,7 +85,7 @@ def find_io_nodes(prompt : Any) -> tuple[Dict[int, tuple[str, str]], Dict[str, s
 
     return input_idx_map, output_idx
 
-def proc_image(im_path : str, im_out : str, view : bool):
+def proc_image(wf: str, im_path : str, im_out : str, view : bool):
     st = time.time()
     def timer():
         nonlocal st
@@ -94,7 +94,7 @@ def proc_image(im_path : str, im_out : str, view : bool):
         st = ct
         return f"{etime:12s} (ms)"
     
-    with open(workflow_file, "r") as fd:
+    with open(wf, "r", encoding="utf-8") as fd:
         prompt = json.load(fd)
 
     print(f"[+{timer()}] Loaded workflow file")
@@ -167,12 +167,14 @@ def run():
     parser.add_argument("IMAGE_IN", help="Path to the input image file.")
     parser.add_argument("IMAGE_OUT_PREFIX", help="Prefix path to the output image files.")
     parser.add_argument("--show", action=argparse.BooleanOptionalAction, default=False, help="Show generated images")
+    parser.add_argument("-wf", "--workflow-file", default=workflow_file, help="Override the default workflow file")
     args = parser.parse_args()
 
+    wf = args.workflow_file
     im_file = args.IMAGE_IN
     im_out = args.IMAGE_OUT_PREFIX
     show = args.show
-    proc_image(im_file, im_out, show)
+    proc_image(wf, im_file, im_out, show)
 
 
 if __name__ == "__main__":
