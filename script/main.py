@@ -1,38 +1,33 @@
-import asyncio
 import glob
 import os
 import random
-import uuid
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import List
 
 import cv2
 import gradio as gr
 import numpy as np
-import websockets.client as wsc
 import websockets.exceptions as wse
 
 import generate_image as gis
-from generate_image_async import (find_io_nodes, make_timer,
-                                  proc_image_persist, prompt_load)
 
 workflow_file = "./template/workflow_api.json"
 vid_dir = "../output/vid"
 out_dir = "./out"
 vid_path = os.path.join(vid_dir, "vid_00001.mp4")
 
+
+# nat_logo = cv2.imread("./res/naturalis_logo.png")
+# dhs_logo = cv2.imread("./res/dhs_logo.png")
+# nat_logo = cv2.resize(nat_logo, None, fx = 124 / nat_logo.shape[1], fy = 124 / nat_logo.shape[1])
+# dhs_logo = cv2.resize(dhs_logo, None, fx = 124 / dhs_logo.shape[1], fy = 124 / dhs_logo.shape[1])
+
+
 # TODO: replace with proper call
 def scanner():
     files = glob.glob("./tex/*.jpg")
     return os.path.abspath(files[random.randint(0, len(files) - 1)]), True
-
-class ComfyRequest:
-    def __init__(self, prompt : Any, param: Dict[int, tuple[str, str]], out_idx : Dict[str, str], im_path : str, im_prefix):
-        self.prompt = prompt
-        self.param = param
-        self.out_idx = out_idx
-        self.im_path = im_path
-        self.im_prefix = im_prefix
-        
 
 class ComfyResponse:
     def __init__(self, source : str, images : List[np.ndarray], vidpath : str):
@@ -50,39 +45,6 @@ class ComfyResponse:
             return self.source, cv2.cvtColor(self.images[0], cv2.COLOR_BGRA2RGBA), self.vidpath, True
 
         return self.source, np.zeros((512,512,3), np.uint8), self.vidpath, False        
-    
-
-class Connection:
-    def __init__(self):
-        self.ws : Optional[wsc.WebSocketClientProtocol]
-        self.connected = False
-        self.qin : asyncio.Queue[Optional[ComfyRequest]] = asyncio.Queue()
-        self.qout : asyncio.Queue[ComfyResponse] = asyncio.Queue()
-        self.client_id = str(uuid.uuid4())
-        
-    def is_connected(self):
-        return self.connected
-
-    async def listen(self, server_address):        
-        while (req := await self.qin.get()) is not None:
-            try:
-                if self.ws is None:
-                    self.ws = await wsc.connect(f"ws://{server_address}/ws?clientId={self.client_id}")
-                                
-                images = await proc_image_persist(self.ws, server_address, self.client_id, req.prompt, req.param, req.out_idx, req.im_path, req.im_prefix)
-                await self.qout.put(ComfyResponse(req.im_path, images, vid_path))
-
-            except wse.WebSocketException as e:
-                print(f"WebSocket exception encountered in websocket client:\n\t{e}")
-                if self.ws is not None:
-                    await self.ws.close()
-                    self.ws = None
-                
-            except Exception as e:
-                print(f"Exception encountered in websocket client:\n\t{e}")
-                
-    def stop(self):
-        asyncio.run(self.qin.put(None))
             
 
 class Workflow:
@@ -96,15 +58,16 @@ class Workflow:
     def update(self, wf : str) -> bool:
         self.wf = wf        
         try:
-            self.prompt = prompt_load(wf)            
-            self.param, self.out_idx, self.succ = find_io_nodes(self.prompt)
+            self.prompt = gis.prompt_load(wf)            
+            self.param, self.out_idx = gis.find_io_nodes(self.prompt)
+            self.succ = True
             return self.succ
         except:
             return False
 
         
 def app():
-    timer = make_timer()
+    timer = gis.make_timer()
     wf = Workflow()
     wf.update(workflow_file)
     print(f"[+{timer()}] Loaded workflow file")
@@ -115,6 +78,7 @@ def app():
     def ensure_connected():
         nonlocal ws
         try:
+
             ws.ping()
         except wse.ConnectionClosed:
             ws = gis.connect_server()
@@ -122,27 +86,75 @@ def app():
             ws.close()
             ws = gis.connect_server()
 
-    def generate_image_command():
-        timer = make_timer()
-        ensure_connected()
-        print(f"[+{timer()}] Completed connection check")        
-        gis.clear_video_dir(vid_dir)
-        print(f"[+{timer()}] Cleared video dir") 
-        fn, res = scanner()
-        print(f"[+{timer()}] Received file from scanner") 
-        if not res:
-            return cr.get()
+    def generate_image_command(progress=gr.Progress()):
+        prog = 0
+        done = False
 
-        out_p = os.path.join(out_dir, os.path.splitext(os.path.basename(fn))[0])
-        images = gis.proc_image_persist(ws, wf.prompt, wf.param, wf.out_idx, fn, out_p)        
-        if len(images) < 1:
-            return cr.get()
+        amount = 10000
+        progress.tqdm(range(amount))
+        def fun():
+            nonlocal prog, done
+            try:
+                timer = gis.make_timer()
+                ensure_connected()
+                print(f"[+{timer()}] Completed connection check")
+                prog = 0.1
 
-        cr.update(fn, images, vid_path)
+                gis.clear_video_dir(vid_dir)
+                print(f"[+{timer()}] Cleared video dir")
+
+                fn, res = scanner()
+                print(f"[+{timer()}] Received file from scanner")
+                if not res:
+                    done = True
+                    return
+
+                out_p = os.path.join(out_dir, os.path.splitext(os.path.basename(fn))[0])
+                prog = 0.95
+                images = gis.proc_image_persist(ws, wf.prompt, wf.param, wf.out_idx, fn, out_p)
+                prog = 0.98
+                if len(images) < 1:
+                    done=True
+                    return
+
+                cr.update(fn, images, vid_path)
+                prog = 1.0
+                done = True
+            except Exception as e:
+                print(f"Failed to retreive data: {e}")
+                done = True
+
+        expected_time = 60
+        st = time.time()
+        thread = threading.Thread(target=fun)
+        thread.start()
+        cprog = 0
+        while not done:
+            upd = int((time.time() - st) * amount / expected_time - cprog) * (random.random() * 1.5)
+            upd = int(min(upd, prog*amount-cprog))
+            progress.update(upd)
+            cprog = cprog + upd
+            time.sleep(0.03)
+
+        thread.join()
+        progress.update(100)
+        
         return cr.get()
+
+
+    css = """
+    footer {visibility: hidden}
+    h1 { text-align : center; display : block;}
+    h2 { text-align : center; display : block;}
+    #logo_left { width: 100px; height: 100px; margin : auto;}
+    """
+
+    theme = gr.themes.Soft()
     
-    
-    with gr.Blocks(css="footer {visibility: hidden}") as inf:
+    with gr.Blocks(theme=theme, css = css) as inf:
+        # with gr.Row():
+        #     gr.Image(value=dhs_logo, elem_id="logo_left")
+        #     #gr.Image(value=nat_logo, elem_id="logo_lft")
         with gr.Row():
             gr.Markdown(
                 """
@@ -153,7 +165,7 @@ def app():
         with gr.Row():
             with gr.Column():
                 gr.Markdown("## Evolution")
-                vid_view = gr.Video(label="Evolution")
+                vid_view = gr.Video(label="Evolution", autoplay=True, every=10)
         with gr.Row():
             with gr.Column():
                 gr.Markdown("## Your Sketch")
