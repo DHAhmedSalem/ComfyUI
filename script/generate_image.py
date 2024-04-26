@@ -117,7 +117,7 @@ def proc_image_persist(
         im_out : str):
 
     timer = make_timer()
-    print(f"[+{timer()}] Sending new query from {im_path}.")
+    print(f"[+{timer()}] Sending new query for {im_path}.")
     prompt[param[0][0]]["inputs"]["image"] = im_path
 
     images = get_images(ws, prompt, out_idx)
