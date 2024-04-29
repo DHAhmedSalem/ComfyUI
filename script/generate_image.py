@@ -12,9 +12,12 @@ import urllib.parse
 import numpy as np
 import argparse
 import os
+import shutil
 import cv2
 import time
 import glob
+import sys
+from tqdm.autonotebook import tqdm
 
 INPUT_PREFIX = "INPUT_"
 INPUT_PREFIX_LEN = len(INPUT_PREFIX)
@@ -31,6 +34,7 @@ client_id = str(uuid.uuid4())
 workflow_file = "./template/workflow_api_simple.json"
 workflow_file = "./template/workflow_api.json"
 vid_dir = "../output/vid"
+vid_path = os.path.join(vid_dir, "vid_00001.mp4")
 
 def queue_prompt(prompt):
     p = {"prompt": prompt, "client_id": client_id}
@@ -114,15 +118,16 @@ def proc_image_persist(
         param : Dict[int, tuple[str, str]],
         out_idx : Dict[str, str],
         im_path : str,
-        im_out : str):
+        im_out : str,
+        log = lambda msg : print(msg)):
 
     timer = make_timer()
-    print(f"[+{timer()}] Sending new query for {im_path}.")
+    log(f"[+{timer()}] Sending new query for {im_path}.")
     prompt[param[0][0]]["inputs"]["image"] = im_path
 
     images = get_images(ws, prompt, out_idx)
 
-    print(f"[+{timer()}] Received {len(images)} image(s) from the server.")
+    log(f"[+{timer()}] Received {len(images)} image(s) from the server.")
 
     rtn = []
 
@@ -136,7 +141,10 @@ def proc_image_persist(
             cv2.imwrite(out_file, im)
             rtn.append(im)
 
-    print(f"[+{timer()}] Finished writing to disk.")
+    if os.path.exists(vid_path):
+        shutil.copy2(vid_path, f"{im_out}_vid.mp4")
+
+    log(f"[+{timer()}] Finished writing to disk.")
     return rtn
 
 def prompt_load(wf : str) -> Any :
@@ -195,6 +203,72 @@ def proc_image(wf: str, im_path : str, im_out : str, view : bool):
     print(f"[+{timer()}] Disconnected from the pserver.")
     return images
 
+def proc_dir(wf : str, srcdir : str, targetdir : str, view : bool):
+    if not os.path.isdir(srcdir) or not os.path.isdir(targetdir):
+        print(f"Error: One or two of the supplied directories are not directories:\n\t{srcdir}\n\t{targetdir}")
+        return []
+        
+    timer = make_timer()
+    prompt = prompt_load(wf)
+    print(f"[+{timer()}] Loaded workflow file")
+    param, out_idx = find_io_nodes(prompt)
+
+    if len(out_idx) == 0:
+        print(f"No output node detected.")
+        return []
+
+    if p := 0 not in param:
+        print(f"Input node {p} not found.")
+        print(f"No node with title matching {INPUT_PREFIX}{p}")
+        return []
+
+    if param[0][1] != NC_LOADIMAGE:
+        print(f"Input node {0} is of type \"{param[0][1]}\". Expected type \"{NC_LOADIMAGE}\".")
+        return []
+
+    print(f"[+{timer()}] Parsed workflow file for I/O")
+
+    ws = connect_server()
+
+    files = glob.glob(os.path.join(srcdir, "*.png")) + glob.glob(os.path.join(srcdir, "*.jpg"))
+    files.sort()
+
+    print(f"[+{timer()}] Processing {len(files)} file(s).")
+
+    results = []
+    pbar = tqdm(files)
+    log = lambda msg : pbar.write(msg)
+    for srcfile in pbar:
+        fn = os.path.splitext(os.path.basename(srcfile))[0]
+
+        im_path = os.path.abspath(srcfile)
+        im_out = os.path.abspath(os.path.join(targetdir, fn))
+        proc_image_persist(ws, prompt, param, out_idx, im_path, im_out, log)
+        
+        results.append(im_out)
+        pbar.write(f"[+{timer()}] Processed \"{fn}\"")
+        
+        
+    # if view:
+    #     win_title = "GEN_IMAGE_PREVIEW_WINDOW"
+    #     cv2.namedWindow(win_title)
+    #     for node_suff in images:
+    #         for image_data in images[node_suff]:
+    #             out_file = f"{im_out}_{node_suff}"
+    #             arr = np.asarray(bytearray(image_data))
+    #             im = cv2.imdecode(arr, -1)
+    #             cv2.imshow(win_title, im)
+    #             cv2.setWindowTitle(win_title, os.path.basename(out_file))
+    #             cv2.waitKey(0)
+
+    #     cv2.destroyWindow(win_title)
+    #     print(f"[+{timer()}] Finished review of images.")
+
+    ws.close()
+    print(f"[+{timer()}] Disconnected from the pserver.")
+    return results
+    
+
 def run():
     parser = argparse.ArgumentParser()
     prog_n = os.path.basename(__file__)
@@ -206,13 +280,18 @@ def run():
     parser.add_argument("IMAGE_OUT_PREFIX", help="Prefix path to the output image files.")
     parser.add_argument("--show", action=argparse.BooleanOptionalAction, default=False, help="Show generated images")
     parser.add_argument("-wf", "--workflow-file", default=workflow_file, help="Override the default workflow file")
+    parser.add_argument("--dir", action=argparse.BooleanOptionalAction, default=False, help="Process all images in the directory")    
     args = parser.parse_args()
 
     wf = args.workflow_file
     im_file = args.IMAGE_IN
     im_out = args.IMAGE_OUT_PREFIX
     show = args.show
-    proc_image(wf, im_file, im_out, show)
+    
+    if args.dir:
+        proc_dir(wf, im_file, im_out, show)
+    else:
+        proc_image(wf, im_file, im_out, show)
 
 
 if __name__ == "__main__":

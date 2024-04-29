@@ -26,7 +26,7 @@ vid_path = os.path.join(vid_dir, "vid_00001.mp4")
 
 # TODO: replace with proper call
 def scanner():
-    files = glob.glob("./tex/*.jpg")
+    files = glob.glob("./tex/*.jpg") + glob.glob("./tex/*.png")
     return os.path.abspath(files[random.randint(0, len(files) - 1)]), True
 
 class ComfyResponse:
@@ -35,7 +35,7 @@ class ComfyResponse:
         self.images = images
         self.vidpath = vidpath
 
-    def update(self, source, images : List[np.ndarray], vidpath : str):
+    def update(self, source : str, images : List[np.ndarray], vidpath : str):
         self.source = source
         self.images = images
         self.vidpath = vidpath
@@ -45,7 +45,24 @@ class ComfyResponse:
             return self.source, cv2.cvtColor(self.images[0], cv2.COLOR_BGRA2RGBA), self.vidpath, True
 
         return self.source, np.zeros((512,512,3), np.uint8), self.vidpath, False        
-            
+
+class GradioDisplay:
+    def __init__(self, source : str, gen : str, vidpath : str):
+        self.source = source
+        self.gen = gen
+        self.vidpath = vidpath
+
+    def update(self, source : str, gen : str,  vidpath : str):
+        self.source = source
+        self.gen = gen
+        self.vidpath = vidpath
+
+    def get(self):
+        if os.path.isfile(self.source) and os.path.isfile(self.gen) and os.path.isfile(self.vidpath) :
+            return self.source, self.gen, self.vidpath, True
+
+        return self.source, self.gen, self.vidpath, False        
+
 
 class Workflow:
     def __init__(self):
@@ -62,7 +79,8 @@ class Workflow:
             self.param, self.out_idx = gis.find_io_nodes(self.prompt)
             self.succ = True
             return self.succ
-        except:
+        except Exception as e:
+            print(f"Exception encountered loading the workflow: {e}")
             return False
 
         
@@ -73,7 +91,7 @@ def app():
     print(f"[+{timer()}] Loaded workflow file")
 
     ws = gis.connect_server()
-    cr = ComfyResponse("", [], vid_path)
+    gd = GradioDisplay("", "", "")
 
     def ensure_connected():
         nonlocal ws
@@ -116,8 +134,8 @@ def app():
                 if len(images) < 1:
                     done=True
                     return
-
-                cr.update(fn, images, vid_path)
+                nvidpath=f"{out_p}_vid.mp4"
+                gd.update(fn, f"{out_p}_generated.png", nvidpath)
                 prog = 1.0
                 done = True
             except Exception as e:
@@ -139,7 +157,7 @@ def app():
         thread.join()
         progress.update(100)
         
-        return cr.get()
+        return gd.get()
 
 
     css = """
